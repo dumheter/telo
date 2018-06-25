@@ -145,6 +145,9 @@ const char * const RST_REASONS[] = {
   "REASON_EXT_SYS_RST"
 };
 
+#define ONE_MINUTE 60e6
+#define ONE_SECOND 1e6
+
 // ============================================================ //
 // Setup
 // ============================================================ //
@@ -155,16 +158,10 @@ void setup()
   WiFi.forceSleepBegin();
   pinMode(battery_level_pin, INPUT);
 
-  // if (is_battery_low()) {
-  //   display_battery_low();
-  //   ESP.deepSleep(10e6, WAKE_RF_DISABLED);
-  // }
-
 #ifdef DEBUG
   constexpr unsigned long BAUDRATE = 74880;
   Serial.begin(BAUDRATE);
   Serial.setDebugOutput(true);
-  //Serial.setTimeout(2000);
   dprintln();
   dprintln("~ TeLo ~");
   display.init(BAUDRATE);
@@ -172,54 +169,57 @@ void setup()
   display.init();
 #endif
 
-  dht.begin();
-
-  dprintln("up and running");
-
-  check_battery_level();
-
-#ifdef DEBUG
-  debug_test_all_components();
+#ifndef DEBUG
+  if (is_battery_low()) {
+    draw_low_battery();
+    ESP.deepSleep(70*ONE_MINUTE, WAKE_RF_DISABLED);
+  }
+#else
+  dprintln("skipping battery check cause of debug mode");
 #endif
 
-  //delay(5000);
+  dht.begin();
+  dprintln("init done");
+
+  draw_fake_data();
+
   dprintln("deep sleep");
-  //ESP.deepSleep(10e6, WAKE_RF_DISABLED);
+  //ESP.deepSleep(60*ONE_MINUTE, WAKE_RF_DISABLED);
 }
 
 // ============================================================ //
 // Loop
 // ============================================================ //
 
-void loop()
-{
-  constexpr unsigned long measure_interval_ms = 5000;
-  static Scheduler<std::vector<Sensor_data<float, float>>, measure>
-    scheduler{measure_interval_ms, measure()};
-  if (scheduler.update()){
-    dprintln("scheduler updated, draw sensor data");
-
-    static int draw_interval = 10;
-
-    if (draw_interval++ > 5) {
-      draw_interval = 0;
-      std::vector<Sensor_data<float, float>> fake_data{};
-      gen_fake_data(fake_data);
-      //draw_sensor_data(scheduler.get());
-      dprint("fake: ");
-      for (auto& d : fake_data) {
-        dprint(d.temp);
-        dprint(", ");
-      }
-      dprintln();
-      draw_sensor_data(fake_data);
-    }
-  }
-}
+void loop() {}
 
 // ============================================================ //
 // Functions
 // ============================================================ //
+
+
+
+void update_temperature()
+{
+  std::vector<Sensor_data<float, float>> data{};
+  dprintln("draw sensor data");
+
+  int draw_interval = 10;
+
+  if (draw_interval++ > 5) {
+    draw_interval = 0;
+    std::vector<Sensor_data<float, float>> fake_data{};
+    gen_fake_data(fake_data);
+    //draw_sensor_data(scheduler.get());
+    dprint("fake: ");
+    for (auto& d : fake_data) {
+      dprint(d.temp);
+      dprint(", ");
+    }
+    dprintln();
+    draw_sensor_data(fake_data);
+  }
+}
 
 void debug_test_all_components()
 {
@@ -270,11 +270,6 @@ bool is_battery_low()
   return (get_battery_voltage(battery_level_pin) < battery_low_voltage);
 }
 
-void check_battery_level()
-{
-
-}
-
 float get_battery_voltage(int pin)
 {
   constexpr float calibration_offset = 0.05;
@@ -284,6 +279,27 @@ float get_battery_voltage(int pin)
               max_voltage / voltage_divider_ratio) - calibration_offset;
 }
 
+void draw_fake_data()
+{
+  std::vector<Sensor_data<float, float>> data{};
+  dprintln("draw fake sensor data");
+
+  int draw_interval = 10;
+
+  if (draw_interval++ > 5) {
+    draw_interval = 0;
+    std::vector<Sensor_data<float, float>> fake_data{};
+    gen_fake_data(fake_data);
+    dprint("fake: ");
+    for (auto& d : fake_data) {
+      dprint(d.temp);
+      dprint(", ");
+    }
+    dprintln();
+    draw_sensor_data(fake_data);
+  }
+}
+
 void gen_fake_data(std::vector<Sensor_data<float, float>>& fake_data)
 {
   constexpr int nr_elem = 30;
@@ -291,7 +307,8 @@ void gen_fake_data(std::vector<Sensor_data<float, float>>& fake_data)
   const float hum_koef = (0.81+millis()%10*0.15) / nr_elem;
   const float offset = millis() / 10000;
   for (int i=0; i<nr_elem; i++) {
-    fake_data.emplace(fake_data.begin(), tmap<float>(cosf(offset+i*temp_koef), -1, 1, 18, 38),
+    fake_data.emplace(fake_data.begin(),
+                      tmap<float>(cosf(offset+i*temp_koef), -1, 1, -10, -1),
                       tmap<float>(sinf(offset+i*hum_koef), -1, 1, 58, 83));
   }
 }
@@ -314,9 +331,12 @@ void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
 
   // title text
   display.setTextColor(GxEPD_BLACK);
-  display.setCursor(60, 10);
+  display.setCursor(30, 10);
   display.setFont(&FreeSans9pt7b);
-  display.println("temperatur");
+  //display.println("temperatur");
+  display.print("temperatur - ");
+  const float v = get_battery_voltage(battery_level_pin);
+  display.println(v);
 
   // graph settings
   constexpr point_t max_height = 200;
@@ -328,27 +348,31 @@ void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
   const Point top_right{bot_right.x, top_left.y};
 
   // draw outlines
-  draw_line(top_left, bot_left);
-  draw_line(bot_left, bot_right);
-  draw_line(top_left, top_right, GxEPD_RED);
-  draw_line(top_right, bot_right, GxEPD_RED);
+  draw_line(top_left, bot_left); // left
+  draw_line(bot_left, bot_right); // down
+  //draw_line(top_left, top_right, GxEPD_RED); //up
+  //draw_line(top_right, bot_right, GxEPD_RED); // right
 
   // temp axis markings
   display.setTextColor(GxEPD_BLACK);
   display.setCursor(0, top_left.y - 4);
   display.print("*C");
   constexpr int v_marking_slots = 5;
-  constexpr point_t v_shrink = 6;
-  const float v_spacing = (bot_right.x - bot_left.x - v_shrink) / (v_marking_slots+1);
+  const float v_spacing = (bot_left.y - top_left.y) / (v_marking_slots+1);
+  const float v_spacing_m = (bot_left.y - top_left.y) / (v_marking_slots);
   constexpr float temp_offset_x = 0;
   constexpr float temp_offset_y = 14;
   constexpr point_t max_temp = 40;
   constexpr point_t min_temp = -10;
   constexpr point_t max_hum = 90;
   constexpr point_t min_hum = 10;
+  constexpr point_t line_len = 8;
   for (int i=0; i<=v_marking_slots; i++) {
     display.setCursor(0+temp_offset_x, top_left.y+temp_offset_y + i*v_spacing);
     display.print(lroundf(max_temp - i*((abs(max_temp)+abs(min_temp))/v_marking_slots)));
+    const Point a{top_left.x - line_len/2, top_left.y + i*v_spacing_m};
+    const Point b{top_left.x + line_len/2, top_left.y + i*v_spacing_m};
+    draw_line(a, b);
   }
 
   // hum axis markings
@@ -365,13 +389,17 @@ void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
   // time axis markings
   constexpr float timeframe_hr = 24;
   constexpr int h_marking_slots = 5;
-  const float h_spacing = (bot_right.x - bot_left.x - margin) / h_marking_slots;
+  const float h_spacing = (bot_right.x - bot_left.x - 14) / h_marking_slots;
+  const float h_spacing_m = (bot_right.x - bot_left.x) / h_marking_slots;
   constexpr float h_offset_x = -8;
   constexpr float h_offset_y = -4;
   display.setTextColor(GxEPD_BLACK);
   for (int i=0; i<=h_marking_slots; i++) {
     display.setCursor(bot_left.x+h_offset_x + i*h_spacing, max_height+h_offset_y);
     display.print(lroundf(i*(timeframe_hr/h_marking_slots)));
+    const Point a{bot_left.x + i*h_spacing_m, bot_left.y - line_len/2};
+    const Point b{bot_left.x + i*h_spacing_m, bot_left.y + line_len/2};
+    draw_line(a, b);
   }
 
   // draw sensor data
@@ -388,6 +416,22 @@ void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
                        top_left.y + tmap(hum, min_hum, max_hum, bot_left.y, top_left.y),
                        radius, GxEPD_RED);
   }
+
+  display.update();
+}
+
+void draw_low_battery()
+{
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(20, 70);
+  display.println("Batteri urladdat");
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(20, 110);
+  display.print("ladda batteriet");
 
   display.update();
 }
