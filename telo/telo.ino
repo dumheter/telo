@@ -74,28 +74,37 @@ GxEPD_Class display(io /*RST=D4*/ /*BUSY=D2*/); // default selection of D4(=2), 
 
 // ============================================================ //
 
-typedef float point_t;
-typedef uint8_t uint_point_t;
+// used to represent sensor data
+typedef int8_t data_point;
 
-template <typename T1, typename T2>
+// used to represent points on the display
+typedef float point_t;
+
+// holds data from sensor
 struct Sensor_data
 {
 public:
-  Sensor_data(T1 new_temp, T2 new_hum) : temp(new_temp), hum(new_hum) {};
+  Sensor_data(data_point new_temp, data_point new_hum) : temp(new_temp), hum(new_hum) {};
 
-  T1 temp;
-  T2 hum;
+  data_point temp, hum;
 };
 
+// container for sensor data
+typedef std::vector<Sensor_data> Data_container;
+
+// point contains x and y coordinates for a 2d point
 struct Point
 {
   Point(point_t new_x, point_t new_y) : x(new_x), y(new_y) {}
   point_t x, y;
 };
 
-uint_point_t point_to_uint(point_t point)
+// convert float to a data_point
+inline data_point ftodp(float point)
 {
-  return static_cast<uint_point_t>(lround(point));
+  constexpr long max = std::numeric_limits<int8_t>::max();
+  constexpr long min = std::numeric_limits<int8_t>::min();
+  return static_cast<data_point>(constrain(lround(point), min, max));
 }
 
 const char * const RST_REASONS[] = {
@@ -149,7 +158,6 @@ void setup()
   dht.begin();
   dprintln("init done");
 
-  //draw_fake_data();
   update_temperature();
 
   dprintln("deep sleep");
@@ -166,7 +174,7 @@ void loop() {}
 // Functions
 // ============================================================ //
 
-void debug_print_data(const std::vector<Sensor_data<float, float>>& data)
+void debug_print_data(const Data_container& data)
 {
   dprint("data: {");
   for (auto& d : data) {
@@ -179,7 +187,7 @@ void debug_print_data(const std::vector<Sensor_data<float, float>>& data)
   dprintln("}");
 }
 
-void take_measurement(std::vector<Sensor_data<float, float>>& data)
+void take_measurement(Data_container& data)
 {
   dprintln("taking measurement");
 
@@ -204,10 +212,12 @@ void take_measurement(std::vector<Sensor_data<float, float>>& data)
   }
 #endif
 
-  // Measure, throw away the value and measure again after 1 sec.
-  // Second measurement is more stable.
+  // you might have a more stable temp reading if you measure
+  // a few times before using the value.
+  constexpr int measurements = 1;
+
   float temp, hum;
-  for (int i=0; i<2; i++) {
+  for (int i=0; i<measurements; i++) {
     constexpr float nan_value = -100;
     sensors_event_t event;
     dht.temperature().getEvent(&event);
@@ -231,18 +241,18 @@ void take_measurement(std::vector<Sensor_data<float, float>>& data)
   }
 
   dprint("measurement taken: ");
-  dprint(temp);
+  dprint(ftodp(temp));
   dprint(",");
-  dprintln(hum);
+  dprintln(ftodp(hum));
 
-  data.emplace(data.begin(), temp, hum);
+  data.emplace(data.begin(), ftodp(temp), ftodp(hum));
 }
 
-void load_sensor_data(std::vector<Sensor_data<float, float>>& data, const char* path)
+void load_sensor_data(Data_container& data, const char* path)
 {
   dprintln("loading sensor data from SPIFFS");
 
-  const auto gen_empty_data = [](std::vector<Sensor_data<float, float>>& _data) {
+  const auto gen_empty_data = [](Data_container& _data) {
     for (int i=0; i<g_data_points; i++) {
       _data.emplace(_data.begin(), 0, 0);
     }
@@ -254,10 +264,10 @@ void load_sensor_data(std::vector<Sensor_data<float, float>>& data, const char* 
     const auto fsize = f.size();
     if (f.size() < 1024) {
       std::unique_ptr<int8_t[]> buf(new int8_t[fsize]);
+      static_assert(sizeof(int8_t) == sizeof(data_point), "type missmatch");
       auto size = f.read(reinterpret_cast<uint8_t*>(buf.get()), fsize);
       for (int i=0; i<size/2; i++) {
-        data.emplace_back(static_cast<point_t>(buf[i*2]),
-                     static_cast<point_t>(buf[i*2+1]));
+        data.emplace_back(buf[i*2], buf[i*2+1]);
       }
       dprint("loaded ");
       dprint(data.size());
@@ -277,7 +287,7 @@ void load_sensor_data(std::vector<Sensor_data<float, float>>& data, const char* 
   }
 }
 
-void save_sensor_data(const std::vector<Sensor_data<float, float>>& data, const char* path)
+void save_sensor_data(const Data_container& data, const char* path)
 {
   dprintln("saving sensor data to SPIFFS");
 
@@ -285,10 +295,11 @@ void save_sensor_data(const std::vector<Sensor_data<float, float>>& data, const 
   dprint("setting buffer size to ");
   dprintln(bsize);
   std::unique_ptr<int8_t[]> buf(new int8_t[bsize]);
+  static_assert(sizeof(int8_t) == sizeof(data_point), "type missmatch");
   int i=0;
   for (const auto& d : data) {
-    buf[i*2] = static_cast<int8_t>(lroundf(d.temp));
-    buf[i*2+1] = static_cast<int8_t>(lroundf(d.hum));
+    buf[i*2] = d.temp;
+    buf[i*2+1] = d.hum;
     i++;
   }
 
@@ -311,7 +322,7 @@ void update_temperature()
 {
   dprintln("~ update temperature ~");
 
-  std::vector<Sensor_data<float, float>> data{};
+  Data_container data{};
   if (!SPIFFS.begin()) {
     dprintln("spiffs init fail");
     return;
@@ -324,59 +335,24 @@ void update_temperature()
   SPIFFS.end();
 }
 
-void debug_test_all_components()
-{
-  dprintln("~ debug test all components ~");
-
-  // temp
-  constexpr float nan_value = -100;
-  float temp, hum;
-  sensors_event_t event;
-  dht.temperature().getEvent(&event);
-  if (isnan(event.temperature)) {
-    temp = nan_value;
-  }
-  else {
-    temp = event.temperature;
-  }
-  dht.humidity().getEvent(&event);
-  if (isnan(event.relative_humidity)) {
-    hum = nan_value;
-  }
-  else {
-    hum = event.relative_humidity;
-  }
-  dprint("temp sensor: ");
-  dprint(temp);
-  dprint(",");
-  dprintln(hum);
-
-  // display
-  debug_draw();
-
-  // voltage sensor
-  dprint("voltage: ");
-  dprintln(get_battery_voltage(battery_level_pin));
-
-  dprintln("~ done with test ~");
-  delay(2000);
-}
-
 void draw_fake_data()
 {
   dprintln("draw fake sensor data");
-  std::vector<Sensor_data<float, float>> fake_data{};
+  Data_container fake_data{};
   gen_fake_data(fake_data);
   dprint("fake: ");
   for (auto& d : fake_data) {
+    dprint("(");
     dprint(d.temp);
     dprint(", ");
+    dprint(d.hum);
+    dprint("), ");
   }
   dprintln();
   draw_sensor_data(fake_data);
 }
 
-void gen_fake_data(std::vector<Sensor_data<float, float>>& fake_data)
+void gen_fake_data(Data_container& fake_data)
 {
   constexpr int nr_elem = 48;
   constexpr float temp_koef = 12.5 / nr_elem;
@@ -384,8 +360,8 @@ void gen_fake_data(std::vector<Sensor_data<float, float>>& fake_data)
   const float offset = millis() / 10000;
   for (int i=0; i<nr_elem; i++) {
     fake_data.emplace(fake_data.begin(),
-                      tmap<float>(cosf(offset+i*temp_koef), -1, 1, -2, 15),
-                      tmap<float>(sinf(offset+i*hum_koef), -1, 1, 58, 83));
+                      tmap<data_point>(ftodp(cosf(offset+i*temp_koef)), -1, 1, -2, 15),
+                      tmap<data_point>(ftodp(sinf(offset+i*hum_koef)), -1, 1, 58, 83));
   }
 }
 
@@ -396,33 +372,29 @@ void draw_line(const Point& a, const Point& b, uint16_t color = GxEPD_BLACK)
   const float length = sqrtf(pow(a.x-b.x, 2) + pow(a.y-b.y, 2));
   const float dx = length_x / length;
   const float dy = length_y / length;
-  for (point_t i=0; i<=length; i++) {
+  for (int i=0; i<=length; i++) {
     display.drawPixel(a.x + dx*i, a.y + dy*i, color);
   }
 }
 
-void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
+void draw_sensor_data(const Data_container& data)
 {
   dprint("drawing sensor data (");
   dprint(data.size());
   dprintln(" data points)");
 
   // find max and min temp
-  point_t min_temp = data[0].temp;
-  point_t max_temp = data[0].temp;
+  data_point min_temp = data[0].temp;
+  data_point max_temp = data[0].temp;
   for (const auto& d : data) {
     if (d.temp > max_temp)
       max_temp = d.temp;
     else if (d.temp < min_temp)
       min_temp = d.temp;
   }
-  min_temp = floorf(min_temp);
-  max_temp = ceilf(max_temp);
 
-  //constexpr point_t max_temp = 0;
-  //constexpr point_t min_temp = -10;
-  constexpr point_t max_hum = 100;
-  constexpr point_t min_hum = 0;
+  constexpr data_point max_hum = 100;
+  constexpr data_point min_hum = 0;
 
   display.fillScreen(GxEPD_WHITE);
 
@@ -498,15 +470,13 @@ void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
   // draw sensor data
   const int data_points = data.size();
   const float data_spacing = (bot_right.x - bot_left.x) / data_points;
-  constexpr uint16_t radius = 2;
+  constexpr uint8_t radius = 2;
   for (int i=0; i<data_points; i++) {
-    float temp = constrain(data[i].temp, min_temp, max_temp);
-    float hum = constrain(data[i].hum, min_hum, max_hum);
     display.drawCircle(lroundf(bot_left.x + i*data_spacing),
-                       lroundf(tmap(temp, min_temp, max_temp, bot_left.y, top_left.y)),
+                       lroundf(tmap(static_cast<point_t>(data[i].temp), static_cast<point_t>(min_temp), static_cast<point_t>(max_temp), bot_left.y, top_left.y)),
                        radius, GxEPD_BLACK);
     display.drawCircle(lroundf(bot_left.x + i*data_spacing),
-                       lroundf(tmap(hum, min_hum, max_hum, bot_left.y, top_left.y)),
+                       lroundf(tmap(static_cast<point_t>(data[i].hum), static_cast<point_t>(min_hum), static_cast<point_t>(max_hum), bot_left.y, top_left.y)),
                        radius, GxEPD_RED);
   }
 
