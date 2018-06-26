@@ -19,6 +19,13 @@ extern "C" {
 #endif
 
 // ============================================================ //
+// Batter level sensor
+#include "battery_level.hpp"
+
+// Battery voltage
+#define battery_level_pin A0
+
+// ============================================================ //
 // Debug
 #define DEBUG
 
@@ -66,10 +73,6 @@ GxIO_Class io(SPI, /*CS=D8*/ SS, /*DC=D3*/ 0, /*RST=D4*/ 2); // arbitrary select
 GxEPD_Class display(io /*RST=D4*/ /*BUSY=D2*/); // default selection of D4(=2), D2(=4)
 
 // ============================================================ //
-// Battery voltage
-#define battery_level_pin A0
-
-// ============================================================ //
 
 typedef float point_t;
 typedef uint8_t uint_point_t;
@@ -94,15 +97,6 @@ uint_point_t point_to_uint(point_t point)
 {
   return static_cast<uint_point_t>(lround(point));
 }
-
-/**
- * functor that poplulates a queue of data points with
- * temperature and humidity data.
- */
-struct measure
-{
-
-};
 
 const char * const RST_REASONS[] = {
   "REASON_DEFAULT_RST",
@@ -130,7 +124,7 @@ void setup()
 {
   WiFi.mode(WIFI_OFF);
   WiFi.forceSleepBegin();
-  pinMode(battery_level_pin, INPUT);
+  battery_level_begin(battery_level_pin);
 
 #ifdef DEBUG
   constexpr unsigned long BAUDRATE = 74880;
@@ -144,7 +138,7 @@ void setup()
 #endif
 
 #ifndef DEBUG
-  if (is_battery_low()) {
+  if (is_battery_low(battery_level_pin)) {
     draw_low_battery();
     ESP.deepSleep(70*ONE_MINUTE, WAKE_RF_DISABLED);
   }
@@ -172,13 +166,43 @@ void loop() {}
 // Functions
 // ============================================================ //
 
+void debug_print_data(const std::vector<Sensor_data<float, float>>& data)
+{
+  dprint("data: {");
+  for (auto& d : data) {
+    dprint("(");
+    dprint(d.temp);
+    dprint(",");
+    dprint(d.hum);
+    dprint("), ");
+  }
+  dprintln("}");
+}
+
 void take_measurement(std::vector<Sensor_data<float, float>>& data)
 {
   dprintln("taking measurement");
 
-  if (data.size() >= g_data_points) {
+#ifdef DEBUG
+  int count = 0;
+#endif
+
+  while (data.size() >= g_data_points) {
     data.pop_back();
+#ifdef DEBUG
+    count++;
+#endif
   }
+
+#ifdef DEBUG
+  if (count > 1) {
+    dprint("warn: deleted ");
+    dprint(count);
+    dprint(" elements from data.");
+    dprint(" Data.size(): ");
+    dprintln(data.size());
+  }
+#endif
 
   // Measure, throw away the value and measure again after 1 sec.
   // Second measurement is more stable.
@@ -231,19 +255,14 @@ void load_sensor_data(std::vector<Sensor_data<float, float>>& data, const char* 
     if (f.size() < 1024) {
       std::unique_ptr<int8_t[]> buf(new int8_t[fsize]);
       auto size = f.read(reinterpret_cast<uint8_t*>(buf.get()), fsize);
-      for (int i=0; i<size; i++) {
-        data.emplace(data.begin(), static_cast<point_t>(buf[i*2]),
+      for (int i=0; i<size/2; i++) {
+        data.emplace_back(static_cast<point_t>(buf[i*2]),
                      static_cast<point_t>(buf[i*2+1]));
       }
-      dprint("inserted ");
+      dprint("loaded ");
       dprint(data.size());
-      dprintln(" sensor data points");
-      dprint("data: ");
-      for (auto& d : data) {
-        dprint(d.temp);
-        dprint(", ");
-      }
-      dprintln();
+      dprintln(" data points");
+      debug_print_data(data);
     }
     else {
       dprintln("data file too large");
@@ -263,6 +282,7 @@ void save_sensor_data(const std::vector<Sensor_data<float, float>>& data, const 
   dprintln("saving sensor data to SPIFFS");
 
   size_t bsize = data.size() * 2;
+  dprint("setting buffer size to ");
   dprintln(bsize);
   std::unique_ptr<int8_t[]> buf(new int8_t[bsize]);
   int i=0;
@@ -277,8 +297,11 @@ void save_sensor_data(const std::vector<Sensor_data<float, float>>& data, const 
   if (f) {
     auto written = f.write(reinterpret_cast<uint8_t*>(buf.get()), bsize);
     dprint("wrote ");
-    dprint(written);
-    dprintln(" to SPIFFS");
+    dprint(written / 2);
+    dprint(" data points to SPIFFS");
+    dprint(". Total size ");
+    dprintln(written);
+    debug_print_data(data);
   }
 
   f.close();
@@ -289,12 +312,11 @@ void update_temperature()
   dprintln("~ update temperature ~");
 
   std::vector<Sensor_data<float, float>> data{};
-  auto res = SPIFFS.begin();
-  if (!res) {
+  if (!SPIFFS.begin()) {
     dprintln("spiffs init fail");
     return;
   }
-  constexpr char* path = "/data.json";
+  constexpr char* path = "/data.raw";
   load_sensor_data(data, path);
   take_measurement(data);
   draw_sensor_data(data);
@@ -340,26 +362,6 @@ void debug_test_all_components()
   delay(2000);
 }
 
-/**
- * Is the battey level low and we should go to sleep instantly?
- *
- * @return If true you should enter deep sleep asap.
- */
-bool is_battery_low()
-{
-  constexpr float battery_low_voltage = 3.1;
-  return (get_battery_voltage(battery_level_pin) < battery_low_voltage);
-}
-
-float get_battery_voltage(int pin)
-{
-  constexpr float calibration_offset = 0.05;
-  constexpr float voltage_divider_ratio = 1.0f/2.0f;
-  constexpr float max_voltage = 3.2;
-  return tmap(static_cast<float>(analogRead(pin)), 0.0f, 1023.0f, 0.0f,
-              max_voltage / voltage_divider_ratio) - calibration_offset;
-}
-
 void draw_fake_data()
 {
   dprintln("draw fake sensor data");
@@ -401,7 +403,9 @@ void draw_line(const Point& a, const Point& b, uint16_t color = GxEPD_BLACK)
 
 void draw_sensor_data(const std::vector<Sensor_data<float, float>>& data)
 {
-  dprintln("drawing sensor data");
+  dprint("drawing sensor data (");
+  dprint(data.size());
+  dprintln(" data points)");
 
   // find max and min temp
   point_t min_temp = data[0].temp;
