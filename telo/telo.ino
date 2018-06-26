@@ -27,7 +27,7 @@ extern "C" {
 
 // ============================================================ //
 // Debug
-#define DEBUG
+//#define DEBUG
 
 #ifdef DEBUG
 #  define dprintln(...) Serial.println(__VA_ARGS__)
@@ -161,6 +161,7 @@ void setup()
   update_temperature();
 
   dprintln("deep sleep");
+  ESP.deepSleep(ONE_MINUTE*6, WAKE_RF_DISABLED);
   //ESP.deepSleep(g_sleep_time, WAKE_RF_DISABLED);
 }
 
@@ -452,7 +453,7 @@ void draw_sensor_data(const Data_container& data)
   // }
 
   // time axis markings
-  constexpr float timeframe_hr = 24;
+  constexpr float timeframe_hr = 48;
   constexpr int h_marking_slots = 5;
   const float h_spacing = (bot_right.x - bot_left.x - 14) / h_marking_slots;
   const float h_spacing_m = (bot_right.x - bot_left.x) / h_marking_slots;
