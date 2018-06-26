@@ -122,9 +122,9 @@ const char * const RST_REASONS[] = {
 
 constexpr uint8_t g_data_points = 48;
 constexpr uint8_t g_samples_per_hour = 1;
-constexpr unsigned long g_wake_time_ms = 9000e3;
-constexpr unsigned long g_sleep_time = ONE_MINUTE * 60 / g_samples_per_hour - g_wake_time_ms;
-void draw_fake_data();
+constexpr unsigned long g_wake_time = 9000e3;
+constexpr unsigned long g_sleep_time = ONE_MINUTE * 60 / g_samples_per_hour - g_wake_time;
+
 // ============================================================ //
 // Setup
 // ============================================================ //
@@ -161,8 +161,8 @@ void setup()
   update_temperature();
 
   dprintln("deep sleep");
-  ESP.deepSleep(ONE_SECOND*20, WAKE_RF_DISABLED);
-  //ESP.deepSleep(g_sleep_time, WAKE_RF_DISABLED);
+  //ESP.deepSleep(ONE_SECOND*20, WAKE_RF_DISABLED);
+  ESP.deepSleep(g_sleep_time, WAKE_RF_DISABLED);
 }
 
 // ============================================================ //
