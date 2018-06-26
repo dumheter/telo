@@ -124,7 +124,7 @@ constexpr uint8_t g_data_points = 48;
 constexpr uint8_t g_samples_per_hour = 1;
 constexpr unsigned long g_wake_time_ms = 9000e3;
 constexpr unsigned long g_sleep_time = ONE_MINUTE * 60 / g_samples_per_hour - g_wake_time_ms;
-
+void draw_fake_data();
 // ============================================================ //
 // Setup
 // ============================================================ //
@@ -161,7 +161,7 @@ void setup()
   update_temperature();
 
   dprintln("deep sleep");
-  ESP.deepSleep(ONE_MINUTE*6, WAKE_RF_DISABLED);
+  ESP.deepSleep(ONE_SECOND*20, WAKE_RF_DISABLED);
   //ESP.deepSleep(g_sleep_time, WAKE_RF_DISABLED);
 }
 
@@ -174,6 +174,23 @@ void loop() {}
 // ============================================================ //
 // Functions
 // ============================================================ //
+
+void draw_cline(const Point& a, const Point& b, uint16_t radius, uint16_t color = GxEPD_BLACK)
+{
+  const float Lx = fabsf(b.x - a.x);
+  const float Ly = fabsf(b.y - a.y);
+  const long L = roundl(sqrtf(powf(Lx, 2)+powf(Ly, 2)));
+  const float m = PI / 2 / L;
+  const float sign = a.y < b.y ? 1.0f : -1.0f;
+
+  display.drawCircle(a.x, a.y, 1, color);
+  display.drawCircle(b.x, b.y, 1, color);
+  for (float i=0; i<L; i++) {
+    display.drawPixel(a.x + Lx*sinf(m*i),
+                      a.y + Ly*sign*(1.0f-cosf(m*i)),
+                      color);
+  }
+}
 
 void debug_print_data(const Data_container& data)
 {
@@ -213,32 +230,39 @@ void take_measurement(Data_container& data)
   }
 #endif
 
-  // you might have a more stable temp reading if you measure
-  // a few times before using the value.
-  constexpr int measurements = 1;
-
-  float temp, hum;
-  for (int i=0; i<measurements; i++) {
-    constexpr float nan_value = -100;
+  const auto do_measure = [](float& temp, float& hum) {
+    constexpr float nan_value = 0;
     sensors_event_t event;
+    bool nan = false;
     dht.temperature().getEvent(&event);
     if (isnan(event.temperature)) {
       temp = nan_value;
+      nan = true;
     }
     else {
-    constexpr float calibration_offset = -1.0f;
-    temp = event.temperature + calibration_offset;
+      constexpr float calibration_offset = -1.0f;
+      temp = event.temperature + calibration_offset;
     }
 
     dht.humidity().getEvent(&event);
     if (isnan(event.relative_humidity)) {
       hum = nan_value;
+      nan = true;
     }
     else {
       hum = event.relative_humidity;
     }
 
+    return !nan;
+  };
+
+  float temp, hum;
+  constexpr int max_measurements = 4;
+  int measurements = 0;
+  bool ok_measurement = false;
+  while (!ok_measurement && measurements++ < max_measurements) {
     delay(1000);
+    ok_measurement = do_measure(temp, hum);
   }
 
   dprint("measurement taken: ");
@@ -361,8 +385,8 @@ void gen_fake_data(Data_container& fake_data)
   const float offset = millis() / 10000;
   for (int i=0; i<nr_elem; i++) {
     fake_data.emplace(fake_data.begin(),
-                      tmap<data_point>(ftodp(cosf(offset+i*temp_koef)), -1, 1, -2, 15),
-                      tmap<data_point>(ftodp(sinf(offset+i*hum_koef)), -1, 1, 58, 83));
+                      ftodp(tmap<float>(cosf(offset+i*temp_koef), -1, 1, -3, 15)),
+                      ftodp(tmap<float>(sinf(offset+i*hum_koef), -1, 1, 58, 83)));
   }
 }
 
@@ -392,6 +416,11 @@ void draw_sensor_data(const Data_container& data)
       max_temp = d.temp;
     else if (d.temp < min_temp)
       min_temp = d.temp;
+  }
+
+  if (abs(min_temp - max_temp) < 6) {
+    min_temp -= 2;
+    max_temp += 2;
   }
 
   constexpr data_point max_hum = 100;
@@ -471,14 +500,14 @@ void draw_sensor_data(const Data_container& data)
   // draw sensor data
   const int data_points = data.size();
   const float data_spacing = (bot_right.x - bot_left.x) / data_points;
-  constexpr uint8_t radius = 2;
-  for (int i=0; i<data_points; i++) {
-    display.drawCircle(lroundf(bot_left.x + i*data_spacing),
-                       lroundf(tmap(static_cast<point_t>(data[i].temp), static_cast<point_t>(min_temp), static_cast<point_t>(max_temp), bot_left.y, top_left.y)),
-                       radius, GxEPD_BLACK);
-    display.drawCircle(lroundf(bot_left.x + i*data_spacing),
-                       lroundf(tmap(static_cast<point_t>(data[i].hum), static_cast<point_t>(min_hum), static_cast<point_t>(max_hum), bot_left.y, top_left.y)),
-                       radius, GxEPD_RED);
+  constexpr uint8_t radius = 1;
+  for (int i=0; i<data_points-1; i++) {
+    draw_cline(Point{lroundf(bot_left.x + i*data_spacing), lroundf(tmap(static_cast<point_t>(data[i].temp), static_cast<point_t>(min_temp), static_cast<point_t>(max_temp), bot_left.y, top_left.y))},
+               Point{lroundf(bot_left.x + (i+1)*data_spacing), lroundf(tmap(static_cast<point_t>(data[i+1].temp), static_cast<point_t>(min_temp), static_cast<point_t>(max_temp), bot_left.y, top_left.y))},
+               radius);
+    draw_cline(Point{lroundf(bot_left.x + i*data_spacing), lroundf(tmap(static_cast<point_t>(data[i].hum), static_cast<point_t>(min_hum), static_cast<point_t>(max_hum), bot_left.y, top_left.y))},
+               Point{lroundf(bot_left.x + (i+1)*data_spacing), lroundf(tmap(static_cast<point_t>(data[i+1].hum), static_cast<point_t>(min_hum), static_cast<point_t>(max_hum), bot_left.y, top_left.y))},
+               radius, GxEPD_RED);
   }
 
   display.update();
