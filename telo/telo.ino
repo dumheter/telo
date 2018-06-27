@@ -22,7 +22,6 @@
 #include <vector>
 #include "ESP8266WiFi.h"
 #include "FS.h"
-#include <ArduinoJson.h>
 
 #ifdef ESP8266
 extern "C" {
@@ -63,7 +62,6 @@ DHT_Unified dht(DHT_PIN, DHT_TYPE);
 // Display
 #include <GxEPD.h>
 #include <GxGDEW0154Z04/GxGDEW0154Z04.cpp>
-
 #include GxEPD_BitmapExamples
 
 // FreeFonts from Adafruit_GFX
@@ -197,84 +195,31 @@ void setup()
 // Loop
 // ============================================================ //
 
+// empty since we sleep instead of going here
 void loop() {}
 
 // ============================================================ //
-// Functions
+// TeLo functions
 // ============================================================ //
 
-constexpr char* battery_low_flag_path = "/bat_low_flag.raw";
-
-void set_battery_low_flag(bool flag)
+/**
+ * take measurement, store it and draw it.
+ */
+void update_temperature()
 {
-  auto f = SPIFFS.open(battery_low_flag_path, "w");
-  if (f) {
-    uint8_t uflag = static_cast<uint8_t>(flag);
-    auto written = f.write(&uflag, 1);
-    if (written != 1) {
-      dprintln("failed to write to SPIFFS");
-    }
-  }
-  else {
-    dprint("failed to open ");
-    dprintln(battery_low_flag_path);
-  }
-  f.close();
+  dprintln("~ update temperature ~");
+
+  Data_container data{};
+  constexpr char* path = "/data.raw";
+  load_sensor_data(data, path);
+  take_measurement(data);
+  draw_sensor_data(data);
+  save_sensor_data(data, path);
 }
 
-bool get_battery_low_flag()
-{
-  auto f = SPIFFS.open(battery_low_flag_path, "r");
-  if (f) {
-    uint8_t uflag;
-    auto bytes = f.read(&uflag, 1);
-    if (bytes != 1) {
-      dprintln("failed to read from SPIFFS");
-    }
-
-    f.close();
-    return uflag != 0;
-  }
-  else {
-    dprint("failed to open ");
-    dprintln(battery_low_flag_path);
-  }
-  f.close();
-
-  // error if we get down here, say battery low to be on safe side
-  return true;
-}
-
-void draw_cline(const Point& a, const Point& b, uint16_t radius, uint16_t color = GxEPD_BLACK)
-{
-  const float Lx = fabsf(b.x - a.x);
-  const float Ly = fabsf(b.y - a.y);
-  const long L = roundl(sqrtf(powf(Lx, 2)+powf(Ly, 2)));
-  const float m = PI / 2 / L;
-  const float sign = a.y < b.y ? 1.0f : -1.0f;
-
-  display.drawCircle(a.x, a.y, 1, color);
-  display.drawCircle(b.x, b.y, 1, color);
-  for (float i=0; i<L; i++) {
-    display.drawPixel(a.x + Lx*sinf(m*i),
-                      a.y + Ly*sign*(1.0f-cosf(m*i)),
-                      color);
-  }
-}
-
-void debug_print_data(const Data_container& data)
-{
-  dprint("data: {");
-  for (auto& d : data) {
-    dprint("(");
-    dprint(d.temp);
-    dprint(",");
-    dprint(d.hum);
-    dprint("), ");
-  }
-  dprintln("}");
-}
-
+/**
+ * Measure temperature & humidity
+ */
 void take_measurement(Data_container& data)
 {
   dprintln("taking measurement");
@@ -342,6 +287,10 @@ void take_measurement(Data_container& data)
 
   data.emplace(data.begin(), ftodp(temp), ftodp(hum));
 }
+
+// ============================================================ //
+// SPIFFS sensor data
+// ============================================================ //
 
 void load_sensor_data(Data_container& data, const char* path)
 {
@@ -413,45 +362,70 @@ void save_sensor_data(const Data_container& data, const char* path)
   f.close();
 }
 
-void update_temperature()
-{
-  dprintln("~ update temperature ~");
+// ============================================================ //
+// SPIFFS battery low flag
+// ============================================================ //
 
-  Data_container data{};
-  constexpr char* path = "/data.raw";
-  load_sensor_data(data, path);
-  take_measurement(data);
-  draw_sensor_data(data);
-  save_sensor_data(data, path);
-}
+constexpr char* battery_low_flag_path = "/bat_low_flag.raw";
 
-void draw_fake_data()
+void set_battery_low_flag(bool flag)
 {
-  dprintln("draw fake sensor data");
-  Data_container fake_data{};
-  gen_fake_data(fake_data);
-  dprint("fake: ");
-  for (auto& d : fake_data) {
-    dprint("(");
-    dprint(d.temp);
-    dprint(", ");
-    dprint(d.hum);
-    dprint("), ");
+  auto f = SPIFFS.open(battery_low_flag_path, "w");
+  if (f) {
+    uint8_t uflag = static_cast<uint8_t>(flag);
+    auto written = f.write(&uflag, 1);
+    if (written != 1) {
+      dprintln("failed to write to SPIFFS");
+    }
   }
-  dprintln();
-  draw_sensor_data(fake_data);
+  else {
+    dprint("failed to open ");
+    dprintln(battery_low_flag_path);
+  }
+  f.close();
 }
 
-void gen_fake_data(Data_container& fake_data)
+bool get_battery_low_flag()
 {
-  constexpr int nr_elem = 48;
-  constexpr float temp_koef = 12.5 / nr_elem;
-  const float hum_koef = (0.81+millis()%10*0.15) / nr_elem;
-  const float offset = millis() / 10000;
-  for (int i=0; i<nr_elem; i++) {
-    fake_data.emplace(fake_data.begin(),
-                      ftodp(tmap<float>(cosf(offset+i*temp_koef), -1, 1, -3, 15)),
-                      ftodp(tmap<float>(sinf(offset+i*hum_koef), -1, 1, 58, 83)));
+  auto f = SPIFFS.open(battery_low_flag_path, "r");
+  if (f) {
+    uint8_t uflag;
+    auto bytes = f.read(&uflag, 1);
+    if (bytes != 1) {
+      dprintln("failed to read from SPIFFS");
+    }
+
+    f.close();
+    return uflag != 0;
+  }
+  else {
+    dprint("failed to open ");
+    dprintln(battery_low_flag_path);
+  }
+  f.close();
+
+  // error if we get down here, say battery low to be on safe side
+  return true;
+}
+
+// ============================================================ //
+// Draw functions
+// ============================================================ //
+
+void draw_cline(const Point& a, const Point& b, uint16_t radius, uint16_t color = GxEPD_BLACK)
+{
+  const float Lx = fabsf(b.x - a.x);
+  const float Ly = fabsf(b.y - a.y);
+  const long L = roundl(sqrtf(powf(Lx, 2)+powf(Ly, 2)));
+  const float m = PI / 2 / L;
+  const float sign = a.y < b.y ? 1.0f : -1.0f;
+
+  display.drawCircle(a.x, a.y, 1, color);
+  display.drawCircle(b.x, b.y, 1, color);
+  for (float i=0; i<L; i++) {
+    display.drawPixel(a.x + Lx*sinf(m*i),
+                      a.y + Ly*sign*(1.0f-cosf(m*i)),
+                      color);
   }
 }
 
@@ -465,6 +439,27 @@ void draw_line(const Point& a, const Point& b, uint16_t color = GxEPD_BLACK)
   for (int i=0; i<=length; i++) {
     display.drawPixel(a.x + dx*i, a.y + dy*i, color);
   }
+}
+
+void draw_low_battery()
+{
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(20, 70);
+  display.println("Batteri urladdat");
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(20, 110);
+  display.print("ladda batteriet");
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(20, 140);
+  const float v = get_battery_voltage(battery_level_pin);
+  display.print(v);
+
+  display.update();
 }
 
 void draw_sensor_data(const Data_container& data)
@@ -578,25 +573,51 @@ void draw_sensor_data(const Data_container& data)
   display.update();
 }
 
-void draw_low_battery()
+// ============================================================ //
+// Debug functions
+// ============================================================ //
+
+void draw_fake_data()
 {
-  display.fillScreen(GxEPD_WHITE);
-  display.setTextColor(GxEPD_BLACK);
+  dprintln("draw fake sensor data");
+  Data_container fake_data{};
+  gen_fake_data(fake_data);
+  dprint("fake: ");
+  for (auto& d : fake_data) {
+    dprint("(");
+    dprint(d.temp);
+    dprint(", ");
+    dprint(d.hum);
+    dprint("), ");
+  }
+  dprintln();
+  draw_sensor_data(fake_data);
+}
 
-  display.setFont(&FreeSans12pt7b);
-  display.setCursor(20, 70);
-  display.println("Batteri urladdat");
+void gen_fake_data(Data_container& fake_data)
+{
+  constexpr int nr_elem = 48;
+  constexpr float temp_koef = 12.5 / nr_elem;
+  const float hum_koef = (0.81+millis()%10*0.15) / nr_elem;
+  const float offset = millis() / 10000;
+  for (int i=0; i<nr_elem; i++) {
+    fake_data.emplace(fake_data.begin(),
+                      ftodp(tmap<float>(cosf(offset+i*temp_koef), -1, 1, -3, 15)),
+                      ftodp(tmap<float>(sinf(offset+i*hum_koef), -1, 1, 58, 83)));
+  }
+}
 
-  display.setFont(&FreeSans12pt7b);
-  display.setCursor(20, 110);
-  display.print("ladda batteriet");
-
-  display.setFont(&FreeSans12pt7b);
-  display.setCursor(20, 140);
-  const float v = get_battery_voltage(battery_level_pin);
-  display.print(v);
-
-  display.update();
+void debug_print_data(const Data_container& data)
+{
+  dprint("data: {");
+  for (auto& d : data) {
+    dprint("(");
+    dprint(d.temp);
+    dprint(",");
+    dprint(d.hum);
+    dprint("), ");
+  }
+  dprintln("}");
 }
 
 void debug_draw()
