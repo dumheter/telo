@@ -1,3 +1,16 @@
+/**
+ * IMPORTANT NOTE:
+ * Battery must be turned off when programming.
+ *
+ * @Author Christoffer Gustafsson
+ * @Date 2018-06-27
+ *
+ * @desc TeLo - TEmperature LOgger
+ * A device logging temperature which it then displays on an
+ * e-ink display. It is built to be power efficient and should be
+ * able to last about two years on a single charge.
+ */
+
 // ============================================================ //
 // Includes and Globals
 // ============================================================ //
@@ -5,7 +18,6 @@
 // ============================================================ //
 // various
 #include <math.h>
-#include "scheduler.hpp"
 #include "util.hpp"
 #include <vector>
 #include "ESP8266WiFi.h"
@@ -119,6 +131,7 @@ const char * const RST_REASONS[] = {
 
 #define ONE_MINUTE 60e6
 #define ONE_SECOND 1e6
+#define MAX_DEEP_SLEEP_TIME 70*ONE_MINUTE
 
 constexpr uint8_t g_data_points = 48;
 constexpr uint8_t g_samples_per_hour = 1;
@@ -146,10 +159,23 @@ void setup()
   display.init();
 #endif
 
+  if (!SPIFFS.begin()) {
+    dprintln("spiffs init fail, retrying in 10 minutes");
+    ESP.deepSleep(10*ONE_MINUTE, WAKE_RF_DISABLED);
+  }
+
 #ifndef DEBUG
+  bool battery_low_flag = get_battery_low_flag();
+
   if (is_battery_low(battery_level_pin)) {
-    draw_low_battery();
-    ESP.deepSleep(70*ONE_MINUTE, WAKE_RF_DISABLED);
+    if (!battery_low_flag) {
+      set_battery_low_flag(true);
+      draw_low_battery();
+    }
+    ESP.deepSleep(MAX_DEEP_SLEEP_TIME, WAKE_RF_DISABLED);
+  }
+  else if (battery_low_flag) {
+    set_battery_low_flag(false);
   }
 #else
   dprintln("skipping battery check cause of debug mode");
@@ -159,6 +185,8 @@ void setup()
   dprintln("init done");
 
   update_temperature();
+
+  SPIFFS.end();
 
   dprintln("deep sleep");
   //ESP.deepSleep(ONE_SECOND*20, WAKE_RF_DISABLED);
@@ -174,6 +202,48 @@ void loop() {}
 // ============================================================ //
 // Functions
 // ============================================================ //
+
+constexpr char* battery_low_flag_path = "/bat_low_flag.raw";
+
+void set_battery_low_flag(bool flag)
+{
+  auto f = SPIFFS.open(battery_low_flag_path, "w");
+  if (f) {
+    uint8_t uflag = static_cast<uint8_t>(flag);
+    auto written = f.write(&uflag, 1);
+    if (written != 1) {
+      dprintln("failed to write to SPIFFS");
+    }
+  }
+  else {
+    dprint("failed to open ");
+    dprintln(battery_low_flag_path);
+  }
+  f.close();
+}
+
+bool get_battery_low_flag()
+{
+  auto f = SPIFFS.open(battery_low_flag_path, "r");
+  if (f) {
+    uint8_t uflag;
+    auto bytes = f.read(&uflag, 1);
+    if (bytes != 1) {
+      dprintln("failed to read from SPIFFS");
+    }
+
+    f.close();
+    return uflag != 0;
+  }
+  else {
+    dprint("failed to open ");
+    dprintln(battery_low_flag_path);
+  }
+  f.close();
+
+  // error if we get down here, say battery low to be on safe side
+  return true;
+}
 
 void draw_cline(const Point& a, const Point& b, uint16_t radius, uint16_t color = GxEPD_BLACK)
 {
@@ -348,16 +418,11 @@ void update_temperature()
   dprintln("~ update temperature ~");
 
   Data_container data{};
-  if (!SPIFFS.begin()) {
-    dprintln("spiffs init fail");
-    return;
-  }
   constexpr char* path = "/data.raw";
   load_sensor_data(data, path);
   take_measurement(data);
   draw_sensor_data(data);
   save_sensor_data(data, path);
-  SPIFFS.end();
 }
 
 void draw_fake_data()
@@ -525,6 +590,11 @@ void draw_low_battery()
   display.setFont(&FreeSans12pt7b);
   display.setCursor(20, 110);
   display.print("ladda batteriet");
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(20, 140);
+  const float v = get_battery_voltage(battery_level_pin);
+  display.print(v);
 
   display.update();
 }
