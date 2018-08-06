@@ -1,5 +1,5 @@
 # TeLo - TEmperature LOgger
-This is a project I completed with the purpose of tracking the temperature inside a greenhouse for the pase day or so.
+This is a project I completed with the purpose of tracking the temperature inside a greenhouse for the paste day or so. It uses a e-ink display and an esp8266 microcontoller and has a projected 2 year battery capacity on a single charge.
 
 Here is the temperature logger in action:
 
